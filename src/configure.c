@@ -87,7 +87,7 @@ static CfgResult usage(int show_devs, CfgResult exit_code){
 			}
 			else {
 				char disabledc = devptr->disabled ? '*' : ' ';
-				if (devptr->disabled <= 1) // if not hidden
+				if (devptr->disabled <= 2) // if not hidden
 					fprintf(stderr, "    [%02d]%c %s\n", i + 1, disabledc, devptr->name);
 			}
 		}
@@ -219,7 +219,7 @@ static CfgResult help_write(void){
 		"\tFile content and format are detected as parameters, possible options are:\n"
 		"\t'cu8', 'cs16', 'cf32' ('IQ' implied),\n"
 		"\t'am.s16', 'am.f32', 'fm.s16', 'fm.f32',\n"
-		"\t'i.f32', 'q.f32', 'logic.u8', and 'vcd'.\n\n"
+		"\t'i.f32', 'q.f32', 'logic.u8', 'ook', and 'vcd'.\n\n"
 		"\tParameters must be separated by non-alphanumeric chars and are case-insensitive.\n"
 		"\tOverrides can be prefixed, separated by colon (':')\n\n"
 		"\tE.g. default detection by extension: path/filename.am.s16\n"
@@ -360,6 +360,63 @@ static CfgResult parse_conf_args(r_cfg_t *cfg, int argc, char *argv[])
 	return r;
 }
 
+static void cfg_unregister_protocol(r_cfg_t *cfg, int idx)
+{
+	if(idx < cfg->active_prots.len && cfg->active_prots.elems[idx] != NULL) {
+		char *bak = cfg->active_prots.elems[idx];
+		cfg->active_prots.elems[idx] = NULL;
+		free(bak);
+	}
+}
+
+static void cfg_unregister_all_protocols(r_cfg_t *cfg)
+{
+	int num_r_devices = getDevCount();
+	list_ensure_size(&cfg->active_prots, num_r_devices);
+
+	// if the list is not empty any more, deactivate each active element
+	for (int a = 0; a < cfg->active_prots.len; a++) {
+		cfg_unregister_protocol(cfg, a);
+	}
+
+	// on an empty or incomplete list, create all other elements as deactivated
+	while (cfg->active_prots.len < num_r_devices) {
+		list_push(&cfg->active_prots, NULL);
+	}
+}
+
+static void cfg_register_protocol(r_cfg_t *cfg, int idx, char *args)
+{
+	if (idx < cfg->active_prots.len) {
+		int argl = (args ? strlen(args) : 0) + 1;
+		cfg->active_prots.elems[idx] = calloc(1, argl);
+		if (args) strcpy(cfg->active_prots.elems[idx], args);
+	}
+}
+
+static void cfg_register_all_protocols(r_cfg_t *cfg, unsigned disabled) // register all device protocols that are not disabled
+{
+	int num_r_devices = getDevCount();
+
+	list_ensure_size(&cfg->active_prots, num_r_devices);
+
+	// if the list is not empty any more, activate each inactive element belonging to a non-disabled protocol (by setting standard, i.e. empty aguments)
+	for (int a = 0; a < cfg->active_prots.len; a++) {
+		if (cfg->active_prots.elems[a] == NULL) {
+			r_device *dev;
+			if (getDev(a, &dev) > 0 && dev->disabled <= disabled && cfg->active_prots.elems[a] == NULL) {
+				cfg->active_prots.elems[a] = strdup(""); // for simplicity, this also covers devices having disabled==3 but librtl_433 will not evaluate this list for such devices)
+			}
+		}
+	}
+
+	// on an empty or incomplete list, create all other elements and activate if required (by setting standard, i.e. empty aguments)
+	while (cfg->active_prots.len < num_r_devices) {
+		r_device *dev;
+		list_push(&cfg->active_prots, ((getDev(cfg->active_prots.len, &dev) > 0 && dev->disabled <= disabled) ? strdup(""): NULL));
+	}
+}
+
 static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
 	if (!cfg) {
 		fprintf(stderr, "Internal error, no r_cfg_t object specified.\n");
@@ -403,12 +460,7 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
 		break;
 	case 'G':
 		if (atobv(arg, 1)) {
-			int devcnt = getDevCount();
-			list_ensure_size(&cfg->active_prots, devcnt);
-			for (int a = 0; a < cfg->active_prots.len; a++) {
-				cfg->active_prots.elems[a] = (void*) 1; // 1 is also suitable for devices having disabled==2 (since in librtl_433 we do not look at prots_acted for such devices)
-			}
-			while (cfg->active_prots.len < devcnt) list_push(&cfg->active_prots, (void*) 1);
+			cfg_register_all_protocols(cfg, 1);
 		}
 		break;
 	case 'p':
@@ -537,23 +589,27 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
 			fprintf(stderr, "Remote device number specified larger than number of devices\n\n");
 			usage(1, CFG_EXITCODE_ONE);
 		}
+		r_device *dev;
+		if((n > 0 && getDev(n - 1, &dev)>0 && dev->disabled > 2) || (n < 0 && getDev(-n - 1, &dev) > 0 && dev->disabled > 2)) {
+			fprintf(stderr, "Remote device number specified is invalid\n\n");
+			usage(1, CFG_EXITCODE_ONE);
+		}
 
-		if (n == 0 || (n > 0 && !cfg->active_prots.len)) {
-			list_ensure_size(&cfg->active_prots, num_r_devices);
-			for (int a = 0; a < cfg->active_prots.len; a++) {
-				cfg->active_prots.elems[a] = 0;
-			}
-			while (cfg->active_prots.len < num_r_devices) list_push(&cfg->active_prots, 0);
+		// on first use of -R...
+		if (!cfg->active_prots.len) {
+			if(n <= 0) cfg_register_all_protocols(cfg, 0); // register all defaults if request is to remove single (or all) protocols
+			else cfg_unregister_all_protocols(cfg);        // start with an empty list if request is to add single protocols
 		}
 
 		if (n >= 1) {
-			if (n <= cfg->active_prots.len) cfg->active_prots.elems[n - 1] = (void*)1;
+			cfg_register_protocol(cfg, n - 1, arg_param(arg));
 		}
 		else if (n <= -1) {
-			if ((-n) <= cfg->active_prots.len) cfg->active_prots.elems[-n - 1] = 0;
+			cfg_unregister_protocol(cfg, (-n - 1));
 		}
 		else { // n == 0
 			fprintf(stderr, "Disabling all device decoders.\n");
+			cfg_unregister_all_protocols(cfg);
 		}
 		break;
 	}
