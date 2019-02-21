@@ -566,6 +566,8 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
 			cfg->report_meta = 1;
         else if (!strcasecmp(arg, "bits"))
             cfg->verbose_bits = 1;
+        else if (!strcasecmp(arg, "description"))
+            cfg->report_description = 1;
 		else
 			cfg->report_meta = atobv(arg, 1);
 		break;
