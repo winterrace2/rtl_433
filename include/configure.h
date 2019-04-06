@@ -11,5 +11,7 @@ typedef enum {
 } CfgResult;
 
 CfgResult configure_librtl433(r_cfg_t *cfg, int argc, char **argv, int allow_default_cfgfile);
+void add_infile(r_cfg_t *cfg, char *in_file);
+void clear_infiles(r_cfg_t *cfg);
 
 #endif // CONFIGURE_INCLUDED
