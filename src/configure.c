@@ -51,8 +51,8 @@ static CfgResult usage(CfgResult exit_code){
             "\t\t= Demodulator options =\n"
             "  [-R <device> | help] Enable only the specified device decoding protocol (can be used multiple times)\n"
             "       Specify a negative number to disable a device decoding protocol (can be used multiple times)\n"
-            "  [-G] Enable all device protocols, included those disabled by default\n"
-            "  [-X <spec> | help] Add a general purpose decoder (-R 0 to disable all other decoders)\n"
+            "  [-G] Enable blacklisted device decoding protocols, for testing only.\n"
+            "  [-X <spec> | help] Add a general purpose decoder (prepend -R 0 to disable all decoders)\n"
             "  [-l <level>] Change detection level used to determine pulses [0-16384] (0 = auto) (default: %i)\n"
             "  [-z <value>] Override short value in data decoder\n"
             "  [-x <value>] Override long value in data decoder\n"
@@ -72,7 +72,7 @@ static CfgResult usage(CfgResult exit_code){
             "  [-F kv | json | csv | syslog | null | help] Produce decoded output in given format.\n"
             "       Append output to file with :<filename> (e.g. -F csv:log.csv), defaults to stdout.\n"
             "       Specify host/port for syslog with e.g. -F syslog:127.0.0.1:1514\n"
-            "  [-M time | reltime | notime | hires | utc | protocol | level | stats | bits | help] Add various meta data to each output.\n"
+            "  [-M time[:<options>] | protocol | level | stats | bits | help] Add various meta data to each output.\n"
             "  [-K FILE | PATH | <tag>] Add an expanded token or fixed tag to every output line.\n"
             "  [-C native | si | customary] Convert units in decoded output.\n"
             "  [-T <seconds>] Specify number of seconds to run\n"
@@ -183,12 +183,13 @@ static CfgResult help_output(void){
         "\tAppend output to file with :<filename> (e.g. -F csv:log.csv), defaults to stdout.\n"
         "\tSpecify MQTT server with e.g. -F mqtt://localhost:1883\n"
         "\tAdd MQTT options with e.g. -F \"mqtt://host:1883,opt=arg\"\n"
-        "\tMQTT options are: user=foo, pass=bar, retain[=0|1],\n"
-        "\t\t usechannel=replaceid|afterid|beforeid|no, <format>[=topic]\n"
-        "\tSupported MQTT formats: (default is all)\n"
+        "\tMQTT options are: user=foo, pass=bar, retain[=0|1], <format>[=topic]\n"
+		"\tSupported MQTT formats: (default is all)\n"
         "\t  events: posts JSON event data\n"
         "\t  states: posts JSON state data\n"
         "\t  devices: posts device and sensor info in nested topics\n"
+        "\tThe topic string will expand keys like [/model]\n"
+        "\tE.g. -F \"mqtt://localhost:1883,user=USERNAME,pass=PASSWORD,retain=0,devices=rtl_433[/id]\"\n"
         "\tSpecify host/port for syslog with e.g. -F syslog:127.0.0.1:1514\n");
     return CFG_EXITCODE_NULL; //exit(0); // handled at caller
 }
@@ -196,13 +197,15 @@ static CfgResult help_output(void){
 static CfgResult help_meta(void)
 {
     fprintf(stderr,
-            "[-M time|reltime|notime|hires|level] Add various metadata to every output line.\n"
-            "\tUse \"time\" to add current date and time meta data (preset for live inputs).\n"
-            "\tUse \"reltime\" to add sample position meta data (preset for read-file and stdin).\n"
-            "\tUse \"notime\" to remove time meta data.\n"
-            "\tUse \"hires\" to add microsecods to date time meta data.\n"
-            "\tUse \"utc\" / \"noutc\" to output timestamps in UTC.\n"
+            "[-M time[:<options>]|protocol|level|stats|bits|newmodel] Add various metadata to every output line.\n"
+            "\tUse \"time:rel\" to add sample position meta data (preset for read-file and stdin).\n"
+            "\tUse \"time:unix\" to show the seconds since unix epoch as time meta data.\n"
+            "\tUse \"time:iso\" to show the time with ISO-8601 format (YYYY-MM-DD\"T\"hh:mm:ss).\n"
+            "\tUse \"time:off\" to remove time meta data.\n"
+            "\tUse \"time:usec\" to add microseconds to date time meta data.\n"
+            "\tUse \"time:utc\" to output time in UTC.\n"
             "\t\t(this may also be accomplished by invocation with TZ environment variable set).\n"
+            "\t\t\"usec\" and \"utc\" can be combined with other options, eg. \"time:unix:utc:usec\".\n"
             "\tUse \"protocol\" / \"noprotocol\" to output the decoder protocol number meta data.\n"
             "\tUse \"level\" to add Modulation, Frequency, RSSI, SNR, and Noise meta data.\n"
             "\tUse \"stats[:[<level>][:<interval>]]\" to report statistics (default: 600 seconds).\n"
@@ -269,7 +272,7 @@ static int hasopt(int test, int argc, char *argv[], char const *optstring)
 
 static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg);
 
-#define OPTSTRING "hVvqDc:x:z:p:aAI:S:m:M:r:w:W:l:d:t:f:H:g:s:b:n:R:X:F:K:C:T:UGy:E"
+#define OPTSTRING "hVvqDc:x:z:p:aAI:S:m:M:r:w:W:l:d:t:f:H:g:s:b:n:R:X:F:K:C:T:UGy:E:"
 
 // these should match the short options exactly
 static struct conf_keywords const conf_keywords[] = {
@@ -486,7 +489,10 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
             fprintf(stderr, "Max number of frequencies reached %d\n", MAX_FREQS);
         break;
     case 'H':
-        cfg->hop_time = atoi_time(arg, "-H: ");
+        if (cfg->hop_times < MAX_FREQS)
+            cfg->hop_time[cfg->hop_times++] = atoi_time(arg, "-H: ");
+        else
+            fprintf(stderr, "Max number of hop times reached %d\n", MAX_FREQS);
         break;
     case 'g':
         if (!arg)
@@ -495,6 +501,7 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
         break;
     case 'G':
         if (atobv(arg, 1)) {
+            fprintf(stderr, "\n\tUse -G for testing only. Enable protocols with -R if you really need them.\n\n");
             cfg_register_all_protocols(cfg, 1);
         }
         break;
@@ -580,9 +587,46 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
         if (!arg)
             return help_meta();
 
-        if (!strcasecmp(arg, "time"))
+        if (!strncasecmp(arg, "time", 4)) {
+            char *p = arg_param(arg);
+            // time  time:1  time:on  time:yes
+            // time:0  time:off  time:no
+            // time:rel
+            // time:unix
+            // time:iso
+            // time:...:usec  time:...:sec
+            // time:...:utc  time:...:local
             cfg->report_time_preference = REPORT_TIME_DATE;
-        else if (!strcasecmp(arg, "reltime"))
+            while (p && *p) {
+                if (!strncasecmp(p, "0", 1) || !strncasecmp(p, "no", 2) || !strncasecmp(p, "off", 3))
+                    cfg->report_time_preference = REPORT_TIME_OFF;
+                else if (!strncasecmp(p, "1", 1) || !strncasecmp(p, "yes", 3) || !strncasecmp(p, "on", 2))
+                    cfg->report_time_preference = REPORT_TIME_DATE;
+                else if (!strncasecmp(p, "rel", 3))
+                    cfg->report_time_preference = REPORT_TIME_SAMPLES;
+                else if (!strncasecmp(p, "unix", 4))
+                    cfg->report_time_preference = REPORT_TIME_UNIX;
+                else if (!strncasecmp(p, "iso", 3))
+                    cfg->report_time_preference = REPORT_TIME_ISO;
+                else if (!strncasecmp(p, "usec", 4))
+                    cfg->report_time_hires = 1;
+                else if (!strncasecmp(p, "sec", 3))
+                    cfg->report_time_hires = 0;
+                else if (!strncasecmp(p, "utc", 3))
+                    cfg->report_time_utc = 1;
+                else if (!strncasecmp(p, "local", 5))
+                    cfg->report_time_utc = 0;
+                else {
+                    fprintf(stderr, "Unknown time format option: %s\n", p);
+                    help_meta();
+                }
+
+                p = arg_param(p);
+            }
+            // fprintf(stderr, "time format: %d, usec:%d utc:%d\n", cfg->report_time, cfg->report_time_hires, cfg->report_time_utc);
+        }
+        // TODO: old time options, remove someday
+		else if (!strcasecmp(arg, "reltime"))
             cfg->report_time_preference = REPORT_TIME_SAMPLES;
         else if (!strcasecmp(arg, "notime"))
             cfg->report_time_preference = REPORT_TIME_OFF;
@@ -592,6 +636,7 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
             cfg->report_time_utc = 1;
         else if (!strcasecmp(arg, "noutc"))
             cfg->report_time_utc = 0;
+
         else if (!strcasecmp(arg, "protocol"))
             cfg->report_protocol = 1;
         else if (!strcasecmp(arg, "noprotocol"))
@@ -689,7 +734,7 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
             char *port = "1883";
             char *opts = hostport_param(arg, &host, &port);
             if (opts) { // might be ""
-                fprintf(stderr, "Publishing MQTT UDP datagrams to %s port %s\n", host, port);
+                fprintf(stderr, "Publishing MQTT data datagrams to %s port %s\n", host, port);
                 strcpy(cfg->output_mqtt_host, host);
                 strcpy(cfg->output_mqtt_port, port);
                 strcpy(cfg->output_mqtt_opts, opts);
@@ -755,7 +800,15 @@ static CfgResult parse_conf_option(r_cfg_t *cfg, int opt, char *arg) {
         strcpy(cfg->test_data, arg);
         break;
     case 'E':
-        cfg->stop_after_successful_events_flag = atobv(arg, 1);
+        if (arg && !strcmp(arg, "hop")) {
+            cfg->after_successful_events_flag = 2;
+        }
+        else if (arg && !strcmp(arg, "quit")) {
+            cfg->after_successful_events_flag = 1;
+        }
+        else {
+            cfg->after_successful_events_flag = atobv(arg, 1);
+        }
         break;
     default:
         return usage(CFG_EXITCODE_ONE);

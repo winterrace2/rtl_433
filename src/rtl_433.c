@@ -37,9 +37,15 @@ static rtl_433_t        *rtl = 0;
 BOOL WINAPI sighandler(int signum) {
     if (CTRL_C_EVENT == signum) {
         fprintf(stderr, "Signal caught, exiting!\n");
-        if (rtl) stop_signal(rtl);
+        if (rtl) signal_stop(rtl);
         else fprintf(stderr, "Error: No rtl_433 instance.\n");
         return TRUE;
+    }
+    else if (CTRL_BREAK_EVENT == signum) {
+        fprintf(stderr, "CTRL-BREAK detected, hopping to next frequency (-f). Use CTRL-C to quit.\n");
+		if (rtl) signal_hop(rtl);
+		else fprintf(stderr, "Error: No rtl_433 instance.\n");
+		return TRUE;
     }
     return FALSE;
 }
@@ -50,6 +56,11 @@ static void sighandler(int signum) {
     }
     else if (signum == SIGINFO/* TODO: maybe SIGUSR1 */) {
         if(rtl) rtl->cfg->stats_now++;
+        return;
+    }
+    else if (signum == SIGUSR1) {
+        if(rtl) rtl->do_exit_async = 1;
+        sdr_stop(cfg.dev); // todo: export
         return;
     }
     else if (signum == SIGALRM) {
@@ -81,6 +92,7 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sigact, NULL);
     sigaction(SIGQUIT, &sigact, NULL);
     sigaction(SIGPIPE, &sigact, NULL);
+    sigaction(SIGUSR1, &sigact, NULL);
     sigaction(SIGINFO, &sigact, NULL);
 #else
     SetConsoleCtrlHandler((PHANDLER_ROUTINE)sighandler, TRUE);
